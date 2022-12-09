@@ -25,5 +25,8 @@
 	"devDependencies": {
 		"shadow-cljs": "^2.20.14",
 		"vscode": "^1.1.22"
+	},
+	"dependencies": {
+		"parinfer": "^3.13.1"
 	}
 }
