@@ -1,19 +1,21 @@
 (ns extension.core
- (:require [cljs.reader :refer [read-string]]))
+ (:require [cljs.reader :refer [read-string]]
+           [cljs.core.async.interop :refer-macros [<p!]]
+           [cljs.core.async :refer [go]]))
 
 (def vscode (js/require "vscode"))
 (def parinfer (js/require "parinfer"));
 
 
 
-(defn run-indent [text]
-  (.indentMode parinfer text))
+(defn run-indent [text options]
+  (.indentMode parinfer text options))
 
-(defn run-smart [text]
- (.smartMode parinfer text))
+(defn run-smart [text options]
+ (.smartMode parinfer text  options))
 
-(defn run-paren [text]
-  (.parenMode parinfer text))
+(defn run-paren [text options]
+  (.parenMode parinfer text options))
 
 (defn space-maker [number]
   (apply str (repeat number " ")))
@@ -23,9 +25,9 @@
  (let [string-val? (string? value)
        map-val?    (map? value)]
   (cond 
-    string-val? (str "\"" value "\"")
-    map-val?    (prettify-edn (str value) offset)
-    :else value)))
+     string-val? (str "\"" value "\"")
+     map-val?    (prettify-edn (str value) offset)
+     :else value)))
 
 (defn prettify-edn [selected-text offset]
   (let [the-map (read-string selected-text)
@@ -36,39 +38,51 @@
            longest-key  (apply max keys-lengths)
            key-column-width (+ longest-key offset)]
       (str (reduce 
-            (fn [till-now [now-key now-value]]
-             (let [now-key-length (count (str now-key))
-                   space-fill-number (- key-column-width now-key-length)
-                   maybe-space (if (not= 1 (count till-now)) " " "")] 
-                (str till-now 
+             (fn [till-now [now-key now-value]]
+               (let [now-key-length (count (str now-key))
+                     space-fill-number (- key-column-width now-key-length)
+                     maybe-space (if (not= 1 (count till-now)) " " "")] 
+                  (str till-now 
                      maybe-space 
                      now-key 
                      (space-maker space-fill-number) 
                      (convert prettify-edn now-value offset) 
                      "\n")))
-            "{"
-            the-map) "}")))))
+             "{"
+             the-map) "}")))))
 
+(defn reset-cursor! [editor prev-selection]
+  (.log js/console "wheere am I" (.-start prev-selection))
+  (.setTimeout js/window #(set! (.-selection editor) prev-selection) 1000))
 
 (defn reformat-all-with-parinfer [editor editBuilder]
-   (let [document          (-> editor .-document)         
+   (let [document          (-> editor .-document) 
+         selection-start   (-> editor .-selection .-start)
+         selection-end     (-> editor .-selection .-end) 
+         prev-selection    (new (.-Selection vscode) selection-start selection-end)     
          last-index        (dec (.-lineCount ^js document))
          first-line        (.lineAt ^js document 0)
          last-line         (.lineAt ^js document last-index)
          start-file        (.-start (.-range first-line))
          end-file          (.-end   (.-range last-line))        
          delete-range      (new (.-Range vscode) start-file end-file)
-         ;selection         (.-selection editor)
+          ;selection         (.-selection editor)
          og-text           (when editor (.getText ^js document delete-range))
-         new-text          (let [smart   (.-text (run-smart  og-text))
-                                 indent  (.-text (run-indent smart))
-                                 paren   (.-text (run-paren  indent))]
+         new-text          (let [smart   (.-text (run-smart  og-text {:prevCursorLine 0
+                                                                      :prevCursorX 0
+                                                                      :cursorLine  (.-line      ^js selection-start)
+                                                                      :cursorX     (.-character ^js selection-start)}))]
+                                                                         
                              smart)
          same?             (= og-text new-text)
          swapping-fn       (fn [text]
                              (.delete editBuilder delete-range)
                              (.insert ^js editBuilder start-file text))]
-        (when (not same?) (swapping-fn new-text))))    
+                             
+     (when (not same?) 
+       (do 
+         (.log js/console "parinfer happening ")
+         (swapping-fn new-text)))))    
      
 
 (defn reformat-selected [editor editBuilder]
@@ -82,27 +96,33 @@
    (.replace editBuilder selection-start (prettify-edn selected-text 2))))
 
 (defn format-selected-map! []
-  (let [editor         (-> vscode .-window .-activeTextEditor)]                
+  (let [editor         (-> vscode .-window .-activeTextEditor)
+        selection-start   (-> editor .-selection .-start)
+        selection-end     (-> editor .-selection .-end)
+        prev-selection    (new (.-Selection vscode) selection-start selection-end)]                
    (if editor 
-     (.edit ^js editor 
-       (fn [editBuilder]        
-        (reformat-selected editor editBuilder))))))
+     (go (let [edit-ready? (<p! (.edit ^js editor (fn [editBuilder] (reformat-selected editor editBuilder))))]
+           (when edit-ready?)))))) 
+        
 
 (defn run-parinfer []
-  (let [editor  (-> vscode .-window .-activeTextEditor)]                
-   (if editor 
+  (let [editor  (-> vscode .-window .-activeTextEditor)]         
+    (if editor 
       (.edit ^js editor 
-       (fn [editBuilder]
-        (reformat-all-with-parinfer editor editBuilder))))))
+             (fn [editBuilder]
+               (reformat-all-with-parinfer editor editBuilder))))))
        
 
 
 (defn change-listener []
  (.onDidChangeTextDocument 
-    (.-workspace vscode)
-    (fn [text-document-change-event]
-        (run-parinfer)
-        (.log js/console text-document-change-event))))        
+   (.-workspace vscode)
+   (fn [text-document-change-event]
+      (let [content-changes (.-contentChanges ^js text-document-change-event)
+            empty-changes?  (empty? content-changes)]                   
+        (when-not empty-changes? 
+          (run-parinfer))))))
+                 
 
 
 (defn activate
