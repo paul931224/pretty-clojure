@@ -3,6 +3,9 @@
             [cljs.core.async.interop :refer-macros [<p!]]
             [cljs.core.async :refer [go]]))
 
+(def vscode (js/require "vscode"))
+(def parinfer (js/require "parinfer"));
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Custom formatters 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -42,13 +45,22 @@
               the-map) "}")))))
 
 
+(defn reformat-selected [editor editBuilder]
+  (let [selection-start   (-> editor .-selection .-start)
+        selection-end     (-> editor .-selection .-end)
+        delete-range      (new (.-Range vscode) selection-start selection-end)
+        selection         (.-selection editor)
+        document          (-> ^js editor .-document)
+        selected-text     (when editor (.getText document ^js selection))]
+    (.delete editBuilder delete-range)
+    (.replace editBuilder selection-start (prettify-edn selected-text 2))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Custom formatters 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
-(def vscode (js/require "vscode"))
-(def parinfer (js/require "parinfer"));
+
 
 (defn run-indent [text options]
   (.indentMode parinfer text options))
@@ -64,7 +76,6 @@
 
 
 (defn reset-cursor! [editor prev-selection]
-  (.log js/console "wheere am I" (.-start prev-selection))
   (.setTimeout js/window #(set! (.-selection editor) prev-selection) 1000))
 
 (defn reformat-all-with-parinfer [editor editBuilder]
@@ -113,21 +124,12 @@
         (swapping-fn new-text)))))
 
 
-(defn reformat-selected [editor editBuilder]
-  (let [selection-start   (-> editor .-selection .-start)
-        selection-end     (-> editor .-selection .-end)
-        delete-range      (new (.-Range vscode) selection-start selection-end)
-        selection         (.-selection editor)
-        document          (-> ^js editor .-document)
-        selected-text     (when editor (.getText document ^js selection))]
-    (.delete editBuilder delete-range)
-    (.replace editBuilder selection-start (prettify-edn selected-text 2))))
+
 
 (defn format-selected-map! []
   (let [editor         (-> vscode .-window .-activeTextEditor)
         selection-start   (-> editor .-selection .-start)
-        selection-end     (-> editor .-selection .-end)
-        prev-selection    (new (.-Selection vscode) selection-start selection-end)]
+        selection-end     (-> editor .-selection .-end)]
     (if editor
       (go (let [edit-ready? (<p! (.edit ^js editor (fn [editBuilder] (reformat-selected editor editBuilder))))]
             (when edit-ready?))))))
@@ -140,8 +142,6 @@
              (fn [editBuilder]
                (reformat-all-with-parinfer editor editBuilder))))))
 
-
-
 (defn change-listener []
   (.onDidChangeTextDocument
    (.-workspace vscode)
@@ -151,12 +151,10 @@
        (when-not empty-changes?
          (run-parinfer))))))
 
-
-
 (defn activate
   [context]
   (let [command    (-> vscode .-commands)
-        disposable (.registerCommand command "extension.helloWorld" #(format-selected-map!))]
+        disposable (.registerCommand command "extension.parinfer" #(format-selected-map!))]
     (change-listener)
     (.. context.subscriptions (push disposable))))
 
