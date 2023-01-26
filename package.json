@@ -13,6 +13,16 @@
 	],
 	"main": "./out/extension.js",
 	"contributes": {
+		"menus": {
+			"editor/context": [
+				{
+					"when": "resourceLangId == clojure",
+					"command": "extension.parinfer",
+					"alt": "markdown.showPreviewToSide",
+					"group": "navigation"
+				}
+			]
+		},
 		"commands": [
 			{
 				"command": "extension.parinfer",
