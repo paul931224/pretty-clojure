@@ -6,6 +6,8 @@
 (def vscode (js/require "vscode"))
 (def parinfer (js/require "parinfer"));
 
+(def editor  (-> vscode .-window .-activeTextEditor))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Custom formatters 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -55,6 +57,11 @@
     (.delete editBuilder delete-range)
     (.replace editBuilder selection-start (prettify-edn selected-text 2))))
 
+
+(defn format-selected-map! []
+  (if editor
+    (go (let [edit-ready? (<p! (.edit ^js editor (fn [editBuilder] (reformat-selected editor editBuilder))))]))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Custom formatters 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -66,90 +73,84 @@
   (.indentMode parinfer text options))
 
 (defn run-smart [text options]
+  (.log js/console options)
   (.smartMode parinfer text  options))
 
 (defn run-paren [text options]
   (.parenMode parinfer text options))
 
 
+(def prev-cursor (atom {:prevCursorLine 0
+                        :prevCursorX    0}))
 
 
+(defn set-prev-cursor! []
+  (let [selection-start (-> editor .-selection .-start)]
+    (reset! prev-cursor {:prevCursorLine (.-line      ^js selection-start)
+                         :prevCursorX    (.-character ^js selection-start)})))
 
-(defn reset-cursor! [editor prev-selection]
-  (.setTimeout js/window #(set! (.-selection editor) prev-selection) 1000))
+(defn reset-cursor! [selection]
+  (set! (.-selection editor) selection))
 
-(defn reformat-all-with-parinfer [editor editBuilder]
+
+(defn reformat-all-with-parinfer [editBuilder smart-text]
   (let [document          (-> editor .-document)
-
-        selection-start   (-> editor .-selection .-start)
-        selection-end     (-> editor .-selection .-end)
-
-        a (.log js/console "sel start: " selection-start)
-
-        prev-selection    (new (.-Selection vscode) selection-start selection-end)
         last-index        (dec (.-lineCount ^js document))
         first-line        (.lineAt ^js document 0)
         last-line         (.lineAt ^js document last-index)
         start-file        (.-start (.-range first-line))
         end-file          (.-end   (.-range last-line))
-        delete-range      (new (.-Range vscode) start-file end-file)
-          ;selection         (.-selection editor)
+        delete-range      (new (.-Range vscode) start-file end-file)]
 
-
-        og-text           (when editor (.getText ^js document delete-range))
-        new-text          (let [smart-result (run-smart  og-text #js {:prevCursorLine 1
-                                                                      :prevCursorX    1
-                                                                      :partialResult true
-                                                                      :cursorLine    (.-line      ^js selection-start)
-                                                                      :cursorX       (.-character ^js selection-start)})
-                                smart-text    (.-text smart-result)
-                                smart-cursor  {:line (.-cursorLine smart-result)
-                                               :char (.-cursorX    smart-result)}
-                                new-position (new (.-Position vscode)
-                                                  (.-cursorLine smart-result)
-                                                  (.-cursorX    smart-result))]
-                            (reset-cursor!
-                             editor
-                             (new (.-Selection vscode) new-position new-position))
-
-                            smart-text)
-        same?             (= og-text new-text)
-        swapping-fn       (fn [text]
-                            (.delete editBuilder delete-range)
-                            (.insert ^js editBuilder start-file text))]
-
-    (when (not same?)
-      (do
-        (.log js/console "parinfer happening ")
-        (swapping-fn new-text)))))
+    (.delete editBuilder delete-range)
+    (.insert ^js editBuilder start-file smart-text)))
 
 
 
 
-(defn format-selected-map! []
-  (let [editor         (-> vscode .-window .-activeTextEditor)
-        selection-start   (-> editor .-selection .-start)
-        selection-end     (-> editor .-selection .-end)]
-    (if editor
-      (go (let [edit-ready? (<p! (.edit ^js editor (fn [editBuilder] (reformat-selected editor editBuilder))))]
-            (when edit-ready?))))))
+
 
 
 (defn run-parinfer []
-  (let [editor  (-> vscode .-window .-activeTextEditor)]
-    (if editor
-      (.edit ^js editor
-             (fn [editBuilder]
-               (reformat-all-with-parinfer editor editBuilder))))))
+  (when editor
+    (let [document          (-> editor .-document)
+          selection-start   (-> editor .-selection .-start)
+          selection-end     (-> editor .-selection .-end)
+          first-line        (.lineAt ^js document 0)
+          last-index        (dec (.-lineCount ^js document))
+          last-line         (.lineAt ^js document last-index)
+          start-file        (.-start (.-range first-line))
+          end-file          (.-end   (.-range last-line))
+          delete-range      (new (.-Range vscode) start-file end-file)
+          og-text           (when editor (.getText ^js document delete-range))
+          smart-result      (run-smart  og-text #js {:prevCursorLine (:prevCursorLine @prev-cursor)
+                                                     :prevCursorX    (:prevCursorX    @prev-cursor)
+                                                     :partialResult  true
+                                                     :cursorLine     (.-line      ^js selection-start)
+                                                     :cursorX        (.-character ^js selection-start)})
+          smart-text        (.-text smart-result)
+          smart-cursor      (let [new-position   (new (.-Position vscode)
+                                                      (.-cursorLine smart-result)
+                                                      (.-cursorX    smart-result))
+                                  new-selection (new (.-Selection vscode) new-position new-position)]
+                              new-selection)
+          smart-error       (.-message smart-result)
+          same?             (= og-text smart-text)
+          a (.log js/console
+                  smart-error)]
+      (set-prev-cursor!)
+      (go (let [edit-ready? (<p! (.edit ^js editor (fn [editBuilder]
+                                                     (when (not same?)
+                                                       (reformat-all-with-parinfer editBuilder smart-text)))))]
+            (when edit-ready? (reset-cursor! smart-cursor)))))))
 
 (defn change-listener []
   (.onDidChangeTextDocument
    (.-workspace vscode)
    (fn [text-document-change-event]
      (let [content-changes (.-contentChanges ^js text-document-change-event)
-           empty-changes?  (empty? content-changes)]
-       (when-not empty-changes?
-         (run-parinfer))))))
+           some-changes?  (not (empty? content-changes))]
+       (when some-changes? (run-parinfer))))))
 
 (defn activate
   [context]
