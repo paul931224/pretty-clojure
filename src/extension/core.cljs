@@ -154,7 +154,7 @@
 (defn activate
   [context]
   (let [command    (-> vscode .-commands)
-        disposable (.registerCommand command "extension.parinfer" #(format-selected-map!))]
+        disposable (.registerCommand command "extension.pretty-edn" #(format-selected-map!))]
     (change-listener)
     (.. context.subscriptions (push disposable))))
 

@@ -8,7 +8,7 @@
 		"vscode": "^1.25.0"
 	},
 	"activationEvents": [
-		"onCommand:extension.parinfer",
+		"onCommand:extension.pretty-edn",
 		"onLanguage:clojure"
 	],
 	"main": "./out/extension.js",
@@ -17,7 +17,7 @@
 			"editor/context": [
 				{
 					"when": "resourceLangId == clojure",
-					"command": "extension.parinfer",
+					"command": "extension.pretty-edn",
 					"alt": "markdown.showPreviewToSide",
 					"group": "navigation"
 				}
@@ -25,8 +25,8 @@
 		},
 		"commands": [
 			{
-				"command": "extension.parinfer",
-				"title": "Parinfer"
+				"command": "extension.pretty-edn",
+				"title": "pretty-edn"
 			}
 		]
 	},
