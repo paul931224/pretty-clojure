@@ -73,7 +73,6 @@
   (.indentMode parinfer text options))
 
 (defn run-smart [text options]
-  (.log js/console options)
   (.smartMode parinfer text  options))
 
 (defn run-paren [text options]
@@ -89,8 +88,7 @@
     (reset! prev-cursor {:prevCursorLine (.-line      ^js selection-start)
                          :prevCursorX    (.-character ^js selection-start)})))
 
-(defn reset-cursor! [selection]
-  (set! (.-selection editor) selection))
+
 
 
 (defn reformat-all-with-parinfer [editBuilder smart-text]
@@ -109,9 +107,20 @@
 
 
 
+(defn Position--obj [line char]
+  (new (.-Position vscode) line char))
+
+(defn Selection--obj [start-Position--obj end-Position--obj]
+  (new (.-Selection vscode) start-Position--obj end-Position--obj))
 
 
-(defn run-parinfer []
+(defn reset-cursor! [selection]
+  (.log js/console "Last set: " (.-character (.-start ^js selection)))
+  (set! (.-selection editor) selection))
+
+(def set-cursor? (atom false))
+
+(defn run-parinfer [changes]
   (when editor
     (let [document          (-> editor .-document)
           selection-start   (-> editor .-selection .-start)
@@ -123,34 +132,66 @@
           end-file          (.-end   (.-range last-line))
           delete-range      (new (.-Range vscode) start-file end-file)
           og-text           (when editor (.getText ^js document delete-range))
-          smart-result      (run-smart  og-text #js {:prevCursorLine (:prevCursorLine @prev-cursor)
-                                                     :prevCursorX    (:prevCursorX    @prev-cursor)
-                                                     :partialResult  true
-                                                     :cursorLine     (.-line      ^js selection-start)
-                                                     :cursorX        (.-character ^js selection-start)})
+          smart-result
+          (run-smart  og-text #js {:changes        ^js changes
+                                   :prevCursorLine (:prevCursorLine @prev-cursor)
+                                   :prevCursorX    (:prevCursorX    @prev-cursor)
+                                   :cursorLine     (.-line      ^js selection-start)
+                                   :cursorX        (.-character ^js selection-start)})
           smart-text        (.-text smart-result)
-          smart-cursor      (let [new-position   (new (.-Position vscode)
-                                                      (.-cursorLine smart-result)
-                                                      (.-cursorX    smart-result))
+          smart-cursor      (let [new-position   (Position--obj (.-cursorLine smart-result)
+                                                                (.-cursorX    smart-result))
                                   new-selection (new (.-Selection vscode) new-position new-position)]
+                              (.log js/console
+                                    (.-cursorLine smart-result)
+                                    " - "
+                                    (.-cursorX    smart-result))
                               new-selection)
-          smart-error       (.-message smart-result)
-          same?             (= og-text smart-text)
-          a (.log js/console
-                  smart-error)]
-      (set-prev-cursor!)
-      (go (let [edit-ready? (<p! (.edit ^js editor (fn [editBuilder]
-                                                     (when (not same?)
-                                                       (reformat-all-with-parinfer editBuilder smart-text)))))]
-            (when edit-ready? (reset-cursor! smart-cursor)))))))
+          same?             (= og-text smart-text)]
+
+      (when @set-cursor?
+        (do
+          (reset-cursor! smart-cursor)
+          (reset! set-cursor? false)))
+      (if (not same?)
+        (do
+          (.edit ^js editor
+                 (fn [editBuilder]
+                   (reformat-all-with-parinfer editBuilder smart-text))
+                 #js {:options? #js {:undoStopAfter true
+                                     :undoStopBefore true}})
+          (reset! set-cursor? true))))))
+
+
+
 
 (defn change-listener []
   (.onDidChangeTextDocument
    (.-workspace vscode)
    (fn [text-document-change-event]
-     (let [content-changes (.-contentChanges ^js text-document-change-event)
-           some-changes?  (not (empty? content-changes))]
-       (when some-changes? (run-parinfer))))))
+     (let [document                  (-> editor .-document)
+           content-changes           (.-contentChanges ^js text-document-change-event)
+           some-changes?             (not (empty? content-changes))
+           first-content-change      (js->clj (first content-changes))
+           range-changed             (get first-content-change "range")
+           range-changed-start       (.-start        ^js range-changed)
+           range-changed-start-line  (.-line         ^js range-changed-start)
+           range-changed-start-ch    (.-character    ^js range-changed-start)
+           range-changed-end         (.-end          ^js range-changed)
+           range-changed-end-line    (.-line         ^js range-changed-end)
+           range-changed-end-ch      (.-character    ^js range-changed-end)
+           start-position            (Position--obj range-changed-start-line range-changed-start-ch)
+           end-position              (Position--obj range-changed-end-line   range-changed-end-ch)
+           selection                 (Selection--obj start-position end-position)
+           new-text-in-range         (get first-content-change "text")
+           old-text-in-range         (.getText document ^js selection)
+           changes                   #js [#js {:lineNo   range-changed-start-line
+                                               :x range-changed-start-ch
+                                               :oldText old-text-in-range
+                                               :newText new-text-in-range}]]
+       (when some-changes? (run-parinfer changes))
+       (set-prev-cursor!)))))
+
 
 (defn activate
   [context]
