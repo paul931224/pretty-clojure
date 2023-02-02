@@ -13,6 +13,13 @@
 	],
 	"main": "./out/extension.js",
 	"contributes": {
+		"keybindings": [
+			{
+				"key": "space",
+				"command": "extension.space",
+				"when": "editorTextFocus"
+			}
+		],
 		"menus": {
 			"editor/context": [
 				{

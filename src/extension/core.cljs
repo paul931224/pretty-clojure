@@ -8,6 +8,8 @@
 
 (def editor  (-> vscode .-window .-activeTextEditor))
 
+(def space? (atom false))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Custom formatters 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -114,13 +116,12 @@
   (new (.-Selection vscode) start-Position--obj end-Position--obj))
 
 
-(defn reset-cursor! [selection]
-  (.log js/console "Last set: " (.-character (.-start ^js selection)))
+(defn set-cursor! [selection]
   (set! (.-selection editor) selection))
 
 (def set-cursor? (atom false))
 
-(defn run-parinfer [changes]
+(defn run-parinfer [{:keys [changes backspace?]}]
   (when editor
     (let [document          (-> editor .-document)
           selection-start   (-> editor .-selection .-start)
@@ -133,33 +134,30 @@
           delete-range      (new (.-Range vscode) start-file end-file)
           og-text           (when editor (.getText ^js document delete-range))
           smart-result
-          (run-smart  og-text #js {:changes        ^js changes
-                                   :prevCursorLine (:prevCursorLine @prev-cursor)
-                                   :prevCursorX    (:prevCursorX    @prev-cursor)
-                                   :cursorLine     (.-line      ^js selection-start)
-                                   :cursorX        (.-character ^js selection-start)})
+          (run-smart
+           og-text #js {:changes        ^js changes
+                        :prevCursorLine (:prevCursorLine @prev-cursor)
+                        :prevCursorX    (:prevCursorX    @prev-cursor)
+                        :cursorLine     (.-line      ^js selection-start)
+                        :cursorX        (.-character ^js selection-start)})
           smart-text        (.-text smart-result)
           smart-cursor      (let [new-position   (Position--obj (.-cursorLine smart-result)
                                                                 (.-cursorX    smart-result))
-                                  new-selection (new (.-Selection vscode) new-position new-position)]
-                              (.log js/console
-                                    (.-cursorLine smart-result)
-                                    " - "
-                                    (.-cursorX    smart-result))
+                                  new-selection  (Selection--obj new-position new-position)]
                               new-selection)
           same?             (= og-text smart-text)]
 
       (when @set-cursor?
         (do
-          (reset-cursor! smart-cursor)
+          (set-cursor! smart-cursor)
           (reset! set-cursor? false)))
       (if (not same?)
         (do
           (.edit ^js editor
                  (fn [editBuilder]
                    (reformat-all-with-parinfer editBuilder smart-text))
-                 #js {:options? #js {:undoStopAfter true
-                                     :undoStopBefore true}})
+                 #js {:options? #js {:undoStopAfter  false
+                                     :undoStopBefore false}})
           (reset! set-cursor? true))))))
 
 
@@ -189,16 +187,33 @@
                                                :x range-changed-start-ch
                                                :oldText old-text-in-range
                                                :newText new-text-in-range}]]
-       (when some-changes? (run-parinfer changes))
+
+       (when (and (not @space?) some-changes?)
+         (do
+           (println "faster?")
+           (run-parinfer {:changes changes})))
+       (reset! space? false)
+
        (set-prev-cursor!)))))
 
+
+(defn insert-space []
+  (let [selection-start   (-> editor .-selection .-start)]
+    (.edit editor
+           (fn [edit-builder]
+             (.insert ^js edit-builder selection-start " ")))))
 
 (defn activate
   [context]
   (let [command    (-> vscode .-commands)
-        disposable (.registerCommand command "extension.pretty-edn" #(format-selected-map!))]
+        disposable-1 (.registerCommand command "extension.pretty-edn" #(format-selected-map!))
+        disposable-1 (.registerCommand command "extension.space"      #(do
+                                                                         (insert-space)
+                                                                         (reset! space? true)
+                                                                         (.log js/console "space pressed.")))]
     (change-listener)
-    (.. context.subscriptions (push disposable))))
+    (.addEventListener js/window "keydown" (fn [event] (.log js/console "hello: " event)))
+    (.. context.subscriptions (push disposable-1))))
 
 (defn deactivate [])
 
